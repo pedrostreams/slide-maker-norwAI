@@ -1,10 +1,33 @@
 // Gemini AI integration for slide generation and modification
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import type { ThemeConfig } from './types';
 
 // Initialize Gemini API
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+// Schema for structured output - ensures valid JSON
+const slidesSchema: any = {
+  type: SchemaType.OBJECT,
+  properties: {
+    slides: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.STRING,
+        description: "Complete HTML string for a single slide section"
+      },
+      description: "Array of HTML slide strings"
+    }
+  },
+  required: ["slides"]
+};
+
+const model = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  generationConfig: {
+    responseMimeType: "application/json",
+    responseSchema: slidesSchema
+  }
+});
 
 /**
  * Generate HTML slides from a user prompt
@@ -88,16 +111,10 @@ ${logo.path ? '6. Include the logo on each slide at the specified position as an
 9. Center content vertically and horizontally when appropriate
 10. Use modern, clean typography with appropriate font sizes (titles: 48-72px, body: 24-32px)
 
-OUTPUT FORMAT:
-Return ONLY a JSON array of HTML strings, with no additional text or markdown:
-[
-  "<section class=\\"slide\\" data-slide=\\"0\\">...</section>",
-  "<section class=\\"slide\\" data-slide=\\"1\\">...</section>"
-]
+OUTPUT:
+Generate ${slideCount || '3-8'} slides. Each slide should be a complete HTML string with proper <section> tags.
 
-${slideCount ? `Generate exactly ${slideCount} slides.` : 'Generate an appropriate number of slides (3-8) based on the content.'}
-
-IMPORTANT: Return ONLY the JSON array, no explanations or markdown code blocks.`;
+${slideCount ? `Generate exactly ${slideCount} slides.` : 'Generate an appropriate number of slides (3-8) based on the content.'}`;
 }
 
 /**
@@ -141,45 +158,37 @@ Return ONLY the modified HTML as a single <section> element, with no explanation
 
 /**
  * Parse the slide response from Gemini
- * Handles both JSON array and markdown-wrapped responses
+ * Handles structured output format: { slides: [...] }
  */
 function parseSlideResponse(response: string): string[] {
   console.log(`Response length: ${response.length} characters`);
 
   try {
-    // Step 1: Remove markdown code blocks if present
-    let cleaned = response.trim();
-    if (cleaned.startsWith('```json')) {
-      cleaned = cleaned.replace(/^```json\n?/g, '').replace(/\n?```$/g, '');
-    } else if (cleaned.startsWith('```')) {
-      cleaned = cleaned.replace(/^```\n?/g, '').replace(/\n?```$/g, '');
-    }
+    // Parse the JSON response (structured output guarantees valid JSON)
+    const parsed = JSON.parse(response);
 
-    cleaned = cleaned.trim();
+    // Structured output format: { slides: [...] }
+    if (parsed.slides && Array.isArray(parsed.slides)) {
+      const validSlides = parsed.slides.filter(
+        (slide: any) => typeof slide === 'string' && slide.includes('<section')
+      );
 
-    // Step 2: Try to parse as JSON first
-    try {
-      const slides = JSON.parse(cleaned);
-
-      if (Array.isArray(slides)) {
-        // Validate each slide
-        const validSlides = slides.filter(slide => typeof slide === 'string' && slide.includes('<section'));
-        if (validSlides.length > 0) {
-          console.log(`Successfully parsed ${validSlides.length} slides from JSON`);
-          return validSlides;
-        }
+      if (validSlides.length > 0) {
+        console.log(`Successfully parsed ${validSlides.length} slides from structured output`);
+        return validSlides;
       }
-    } catch (jsonError) {
-      console.log('JSON parsing failed, trying regex extraction');
     }
 
-    // Step 3: Fallback to regex extraction on raw response
-    const sectionRegex = /<section[^>]*class=["']slide["'][^>]*>[\s\S]*?<\/section>/gi;
-    const matches = response.match(sectionRegex);
+    // Fallback: check if it's a plain array (legacy format)
+    if (Array.isArray(parsed)) {
+      const validSlides = parsed.filter(
+        (slide: any) => typeof slide === 'string' && slide.includes('<section')
+      );
 
-    if (matches && matches.length > 0) {
-      console.log(`Extracted ${matches.length} slides using regex`);
-      return matches;
+      if (validSlides.length > 0) {
+        console.log(`Successfully parsed ${validSlides.length} slides from array format`);
+        return validSlides;
+      }
     }
 
     throw new Error('No valid slides found in response');
