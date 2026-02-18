@@ -1,7 +1,5 @@
-// Local filesystem storage operations for slide decks
-import fs from 'fs/promises';
-import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
+// Supabase storage operations for slide decks
+import { createClient } from '@supabase/supabase-js';
 import type {
   Deck,
   DeckMetadata,
@@ -12,134 +10,116 @@ import type {
 } from './types';
 import { defaultThemeConfig } from './types';
 
-const SLIDES_DIR = path.join(process.cwd(), 'slides');
-const SHARES_FILE = path.join(process.cwd(), 'shares.json');
-const GLOBAL_SETTINGS_FILE = path.join(process.cwd(), 'global-settings.json');
+// Initialize Supabase client
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-// Ensure slides directory exists
-async function ensureSlidesDir() {
-  try {
-    await fs.access(SLIDES_DIR);
-  } catch {
-    await fs.mkdir(SLIDES_DIR, { recursive: true });
-  }
-}
-
-// Get path to deck directory
-function getDeckPath(deckId: string): string {
-  return path.join(SLIDES_DIR, deckId);
-}
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Create a new deck
 export async function createDeck(title: string): Promise<string> {
-  await ensureSlidesDir();
-
-  const deckId = uuidv4();
-  const deckPath = getDeckPath(deckId);
-
-  // Create deck directory and assets subdirectory
-  await fs.mkdir(deckPath, { recursive: true });
-  await fs.mkdir(path.join(deckPath, 'assets'), { recursive: true });
-
-  // Create metadata
-  const metadata: DeckMetadata = {
-    id: deckId,
-    title,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    slideCount: 0,
-  };
-
-  await fs.writeFile(
-    path.join(deckPath, 'metadata.json'),
-    JSON.stringify(metadata, null, 2)
-  );
-
-  // Create config from global settings
+  // Get global settings for initial config
   const globalSettings = await getGlobalSettings();
-  await fs.writeFile(
-    path.join(deckPath, 'config.json'),
-    JSON.stringify(globalSettings, null, 2)
-  );
 
-  // Create empty comments file
-  await fs.writeFile(
-    path.join(deckPath, 'comments.json'),
-    JSON.stringify({ comments: [] }, null, 2)
-  );
+  // Insert deck
+  const { data: deck, error: deckError } = await supabase
+    .from('decks')
+    .insert({ title, slide_count: 0 })
+    .select()
+    .single();
 
-  // Create empty index.html
-  await fs.writeFile(
-    path.join(deckPath, 'index.html'),
-    '<!DOCTYPE html><html><head><title>' + title + '</title></head><body></body></html>'
-  );
+  if (deckError || !deck) {
+    throw new Error('Failed to create deck');
+  }
 
-  return deckId;
+  // Insert config
+  await supabase
+    .from('deck_configs')
+    .insert({
+      deck_id: deck.id,
+      config: globalSettings,
+    });
+
+  return deck.id;
 }
 
 // Get deck metadata
 export async function getDeckMetadata(deckId: string): Promise<DeckMetadata | null> {
-  try {
-    const metadataPath = path.join(getDeckPath(deckId), 'metadata.json');
-    const content = await fs.readFile(metadataPath, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
+  const { data, error } = await supabase
+    .from('decks')
+    .select('*')
+    .eq('id', deckId)
+    .single();
+
+  if (error || !data) return null;
+
+  return {
+    id: data.id,
+    title: data.title,
+    slideCount: data.slide_count,
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+  };
 }
 
 // Get full deck with all data
 export async function getDeck(deckId: string): Promise<Deck | null> {
-  try {
-    const deckPath = getDeckPath(deckId);
+  const [metadata, configData, slidesData, commentsData] = await Promise.all([
+    getDeckMetadata(deckId),
+    supabase.from('deck_configs').select('config').eq('deck_id', deckId).single(),
+    supabase.from('slides').select('*').eq('deck_id', deckId).order('slide_index'),
+    supabase.from('comments').select('*').eq('deck_id', deckId).order('created_at'),
+  ]);
 
-    // Read metadata
-    const metadata = await getDeckMetadata(deckId);
-    if (!metadata) return null;
+  if (!metadata) return null;
 
-    // Read config
-    const configContent = await fs.readFile(
-      path.join(deckPath, 'config.json'),
-      'utf-8'
-    );
-    const config: ThemeConfig = JSON.parse(configContent);
+  const slides: Slide[] = slidesData.data?.map(s => ({
+    index: s.slide_index,
+    html: s.html,
+  })) || [];
 
-    // Read comments
-    const commentsContent = await fs.readFile(
-      path.join(deckPath, 'comments.json'),
-      'utf-8'
-    );
-    const { comments } = JSON.parse(commentsContent);
+  const comments: Comment[] = commentsData.data?.map(c => ({
+    id: c.id,
+    slideIndex: c.slide_index,
+    selector: c.selector,
+    position: { x: c.position_x, y: c.position_y },
+    text: c.text,
+    author: c.author,
+    resolved: c.resolved,
+    createdAt: c.created_at,
+  })) || [];
 
-    // Read all slide files
-    const files = await fs.readdir(deckPath);
-    const slideFiles = files
-      .filter(f => f.startsWith('slide-') && f.endsWith('.html'))
-      .sort((a, b) => {
-        const numA = parseInt(a.match(/slide-(\d+)\.html/)?.[1] || '0');
-        const numB = parseInt(b.match(/slide-(\d+)\.html/)?.[1] || '0');
-        return numA - numB;
-      });
+  const config = configData.data?.config || defaultThemeConfig;
 
-    const slides: Slide[] = await Promise.all(
-      slideFiles.map(async (file, index) => {
-        const html = await fs.readFile(path.join(deckPath, file), 'utf-8');
-        return { index, html };
-      })
-    );
+  return {
+    ...metadata,
+    slides,
+    config,
+    comments,
+  };
+}
 
-    return {
-      id: deckId,
-      title: metadata.title,
-      slides,
-      config,
-      comments,
-      metadata,
-    };
-  } catch (error) {
-    console.error('Error reading deck:', error);
-    return null;
-  }
+// Get deck config
+export async function getConfig(deckId: string): Promise<ThemeConfig | null> {
+  const { data, error } = await supabase
+    .from('deck_configs')
+    .select('config')
+    .eq('deck_id', deckId)
+    .single();
+
+  if (error || !data) return null;
+
+  return data.config;
+}
+
+// Update deck config
+export async function updateConfig(deckId: string, config: ThemeConfig): Promise<void> {
+  await supabase
+    .from('deck_configs')
+    .update({ config })
+    .eq('deck_id', deckId);
+
+  await updateDeckTimestamp(deckId);
 }
 
 // Update a single slide
@@ -148,173 +128,165 @@ export async function updateSlide(
   slideIndex: number,
   html: string
 ): Promise<void> {
-  const deckPath = getDeckPath(deckId);
-  const slideFile = path.join(deckPath, `slide-${slideIndex}.html`);
+  await supabase
+    .from('slides')
+    .upsert({
+      deck_id: deckId,
+      slide_index: slideIndex,
+      html,
+    }, {
+      onConflict: 'deck_id,slide_index'
+    });
 
-  await fs.writeFile(slideFile, html);
-
-  // Update metadata timestamp
   await updateDeckTimestamp(deckId);
 }
 
 // Save multiple slides (used during generation)
-export async function saveSlides(
-  deckId: string,
-  slides: string[]
-): Promise<void> {
-  const deckPath = getDeckPath(deckId);
+export async function saveSlides(deckId: string, slideHtmls: string[]): Promise<void> {
+  // Delete existing slides
+  await supabase.from('slides').delete().eq('deck_id', deckId);
 
-  // Write each slide to a separate file
-  await Promise.all(
-    slides.map((html, index) =>
-      fs.writeFile(path.join(deckPath, `slide-${index}.html`), html)
-    )
-  );
+  // Insert new slides
+  const slides = slideHtmls.map((html, index) => ({
+    deck_id: deckId,
+    slide_index: index,
+    html,
+  }));
+
+  await supabase.from('slides').insert(slides);
 
   // Update metadata
-  const metadata = await getDeckMetadata(deckId);
-  if (metadata) {
-    metadata.slideCount = slides.length;
-    metadata.updatedAt = new Date().toISOString();
-    await fs.writeFile(
-      path.join(deckPath, 'metadata.json'),
-      JSON.stringify(metadata, null, 2)
-    );
-  }
+  await supabase
+    .from('decks')
+    .update({
+      slide_count: slideHtmls.length,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', deckId);
 }
 
-// Save a comment
-export async function saveComment(
-  deckId: string,
-  comment: Comment
-): Promise<void> {
-  const deckPath = getDeckPath(deckId);
-  const commentsPath = path.join(deckPath, 'comments.json');
+// Get slides for a deck
+export async function getSlides(deckId: string): Promise<Slide[]> {
+  const { data } = await supabase
+    .from('slides')
+    .select('*')
+    .eq('deck_id', deckId)
+    .order('slide_index');
 
-  const content = await fs.readFile(commentsPath, 'utf-8');
-  const data = JSON.parse(content);
+  return data?.map(s => ({
+    index: s.slide_index,
+    html: s.html,
+  })) || [];
+}
 
-  data.comments.push(comment);
+// Comment management
+export async function saveComment(deckId: string, comment: Comment): Promise<void> {
+  await supabase.from('comments').insert({
+    id: comment.id,
+    deck_id: deckId,
+    slide_index: comment.slideIndex,
+    selector: comment.selector,
+    position_x: comment.position.x,
+    position_y: comment.position.y,
+    text: comment.text,
+    author: comment.author,
+    resolved: comment.resolved,
+    created_at: comment.createdAt,
+  });
 
-  await fs.writeFile(commentsPath, JSON.stringify(data, null, 2));
   await updateDeckTimestamp(deckId);
 }
 
-// Get all comments for a deck
-export async function getComments(deckId: string): Promise<Comment[]> {
-  try {
-    const deckPath = getDeckPath(deckId);
-    const commentsPath = path.join(deckPath, 'comments.json');
-    const content = await fs.readFile(commentsPath, 'utf-8');
-    const { comments } = JSON.parse(content);
-    return comments;
-  } catch {
-    return [];
-  }
-}
-
-// Update a comment
 export async function updateComment(
   deckId: string,
   commentId: string,
   updates: Partial<Comment>
 ): Promise<void> {
-  const deckPath = getDeckPath(deckId);
-  const commentsPath = path.join(deckPath, 'comments.json');
+  const updateData: any = {};
 
-  const content = await fs.readFile(commentsPath, 'utf-8');
-  const data = JSON.parse(content);
+  if (updates.resolved !== undefined) updateData.resolved = updates.resolved;
+  if (updates.text !== undefined) updateData.text = updates.text;
 
-  const commentIndex = data.comments.findIndex((c: Comment) => c.id === commentId);
-  if (commentIndex >= 0) {
-    data.comments[commentIndex] = { ...data.comments[commentIndex], ...updates };
-    await fs.writeFile(commentsPath, JSON.stringify(data, null, 2));
-    await updateDeckTimestamp(deckId);
-  }
-}
+  await supabase
+    .from('comments')
+    .update(updateData)
+    .eq('id', commentId);
 
-// Update theme config
-export async function updateConfig(
-  deckId: string,
-  config: ThemeConfig
-): Promise<void> {
-  const deckPath = getDeckPath(deckId);
-  await fs.writeFile(
-    path.join(deckPath, 'config.json'),
-    JSON.stringify(config, null, 2)
-  );
   await updateDeckTimestamp(deckId);
 }
 
-// Get theme config
-export async function getConfig(deckId: string): Promise<ThemeConfig | null> {
-  try {
-    const deckPath = getDeckPath(deckId);
-    const content = await fs.readFile(path.join(deckPath, 'config.json'), 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
+export async function getComments(deckId: string): Promise<Comment[]> {
+  const { data } = await supabase
+    .from('comments')
+    .select('*')
+    .eq('deck_id', deckId)
+    .order('created_at');
+
+  return data?.map(c => ({
+    id: c.id,
+    slideIndex: c.slide_index,
+    selector: c.selector,
+    position: { x: c.position_x, y: c.position_y },
+    text: c.text,
+    author: c.author,
+    resolved: c.resolved,
+    createdAt: c.created_at,
+  })) || [];
 }
 
 // List all decks
 export async function listDecks(): Promise<DeckMetadata[]> {
-  await ensureSlidesDir();
+  const { data } = await supabase
+    .from('decks')
+    .select('*')
+    .order('updated_at', { ascending: false });
 
-  try {
-    const entries = await fs.readdir(SLIDES_DIR, { withFileTypes: true });
-    const deckDirs = entries.filter(e => e.isDirectory());
+  if (!data) return [];
 
-    const decks = await Promise.all(
-      deckDirs.map(async (dir) => {
-        const metadata = await getDeckMetadata(dir.name);
-        return metadata;
-      })
-    );
-
-    return decks
-      .filter((m): m is DeckMetadata => m !== null)
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  } catch {
-    return [];
-  }
+  return data.map(d => ({
+    id: d.id,
+    title: d.title,
+    slideCount: d.slide_count,
+    createdAt: d.created_at,
+    updatedAt: d.updated_at,
+  }));
 }
 
 // List decks with first slide preview
-export async function listDecksWithPreviews(): Promise<Array<DeckMetadata & { firstSlideHtml?: string; config?: ThemeConfig }>> {
+export async function listDecksWithPreviews(): Promise<
+  Array<DeckMetadata & { firstSlideHtml?: string; config?: ThemeConfig }>
+> {
   const decks = await listDecks();
 
   return Promise.all(
     decks.map(async (deck) => {
-      try {
-        // Try to read first slide
-        const firstSlideFile = path.join(getDeckPath(deck.id), 'slide-0.html');
-        const firstSlideHtml = await fs.readFile(firstSlideFile, 'utf-8');
+      const [slidesData, configData] = await Promise.all([
+        supabase
+          .from('slides')
+          .select('html')
+          .eq('deck_id', deck.id)
+          .eq('slide_index', 0)
+          .single(),
+        supabase
+          .from('deck_configs')
+          .select('config')
+          .eq('deck_id', deck.id)
+          .single(),
+      ]);
 
-        // Also get config for proper rendering
-        const config = await getConfig(deck.id);
-
-        return {
-          ...deck,
-          firstSlideHtml,
-          config: config || undefined,
-        };
-      } catch {
-        // Deck has no slides yet
-        return {
-          ...deck,
-          firstSlideHtml: undefined,
-          config: undefined,
-        };
-      }
+      return {
+        ...deck,
+        firstSlideHtml: slidesData.data?.html,
+        config: configData.data?.config,
+      };
     })
   );
 }
 
 // Delete a deck
 export async function deleteDeck(deckId: string): Promise<void> {
-  const deckPath = getDeckPath(deckId);
-  await fs.rm(deckPath, { recursive: true, force: true });
+  // Cascade delete will handle slides, comments, config, and share tokens
+  await supabase.from('decks').delete().eq('id', deckId);
 }
 
 // Duplicate a deck
@@ -322,118 +294,102 @@ export async function duplicateDeck(deckId: string): Promise<string> {
   const sourceDeck = await getDeck(deckId);
   if (!sourceDeck) throw new Error('Deck not found');
 
-  const newDeckId = await createDeck(`${sourceDeck.title} (Copy)`);
-  const newDeckPath = getDeckPath(newDeckId);
-  const sourceDeckPath = getDeckPath(deckId);
-
-  // Copy all files
-  const files = await fs.readdir(sourceDeckPath);
-  await Promise.all(
-    files.map(async (file) => {
-      if (file === 'metadata.json') return; // Skip metadata, already created
-      const sourcePath = path.join(sourceDeckPath, file);
-      const destPath = path.join(newDeckPath, file);
-      const stat = await fs.stat(sourcePath);
-      if (stat.isDirectory()) {
-        await fs.mkdir(destPath, { recursive: true });
-        const subFiles = await fs.readdir(sourcePath);
-        await Promise.all(
-          subFiles.map(sf =>
-            fs.copyFile(path.join(sourcePath, sf), path.join(destPath, sf))
-          )
-        );
-      } else {
-        await fs.copyFile(sourcePath, destPath);
-      }
+  // Create new deck
+  const { data: newDeck, error } = await supabase
+    .from('decks')
+    .insert({
+      title: `${sourceDeck.title} (Copy)`,
+      slide_count: sourceDeck.slideCount,
     })
-  );
+    .select()
+    .single();
 
-  // Update metadata with correct slide count
-  const metadata = await getDeckMetadata(newDeckId);
-  if (metadata) {
-    metadata.slideCount = sourceDeck.slides.length;
-    await fs.writeFile(
-      path.join(newDeckPath, 'metadata.json'),
-      JSON.stringify(metadata, null, 2)
-    );
+  if (error || !newDeck) throw new Error('Failed to duplicate deck');
+
+  // Copy config
+  await supabase.from('deck_configs').insert({
+    deck_id: newDeck.id,
+    config: sourceDeck.config,
+  });
+
+  // Copy slides
+  const slides = sourceDeck.slides.map(s => ({
+    deck_id: newDeck.id,
+    slide_index: s.index,
+    html: s.html,
+  }));
+
+  if (slides.length > 0) {
+    await supabase.from('slides').insert(slides);
   }
 
-  return newDeckId;
+  return newDeck.id;
 }
 
 // Rename a deck
 export async function renameDeck(deckId: string, newTitle: string): Promise<void> {
-  const metadata = await getDeckMetadata(deckId);
-  if (!metadata) throw new Error('Deck not found');
-
-  metadata.title = newTitle;
-  metadata.updatedAt = new Date().toISOString();
-
-  await fs.writeFile(
-    path.join(getDeckPath(deckId), 'metadata.json'),
-    JSON.stringify(metadata, null, 2)
-  );
+  await supabase
+    .from('decks')
+    .update({
+      title: newTitle,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', deckId);
 }
 
 // Helper: Update deck timestamp
 async function updateDeckTimestamp(deckId: string): Promise<void> {
-  const metadata = await getDeckMetadata(deckId);
-  if (metadata) {
-    metadata.updatedAt = new Date().toISOString();
-    await fs.writeFile(
-      path.join(getDeckPath(deckId), 'metadata.json'),
-      JSON.stringify(metadata, null, 2)
-    );
-  }
+  await supabase
+    .from('decks')
+    .update({ updated_at: new Date().toISOString() })
+    .eq('id', deckId);
 }
 
 // Share token management
 export async function createShareToken(deckId: string): Promise<ShareToken> {
-  const token = uuidv4();
-  const shareToken: ShareToken = {
-    token,
-    deckId,
-    createdAt: new Date().toISOString(),
+  const { data, error } = await supabase
+    .from('share_tokens')
+    .insert({ deck_id: deckId })
+    .select()
+    .single();
+
+  if (error || !data) throw new Error('Failed to create share token');
+
+  return {
+    token: data.token,
+    deckId: data.deck_id,
+    createdAt: data.created_at,
   };
-
-  // Read existing shares
-  let shares: ShareToken[] = [];
-  try {
-    const content = await fs.readFile(SHARES_FILE, 'utf-8');
-    shares = JSON.parse(content);
-  } catch {
-    // File doesn't exist yet
-  }
-
-  shares.push(shareToken);
-  await fs.writeFile(SHARES_FILE, JSON.stringify(shares, null, 2));
-
-  return shareToken;
 }
 
 // Get deck ID from share token
 export async function getDeckByToken(token: string): Promise<string | null> {
-  try {
-    const content = await fs.readFile(SHARES_FILE, 'utf-8');
-    const shares: ShareToken[] = JSON.parse(content);
-    const share = shares.find(s => s.token === token);
-    return share?.deckId || null;
-  } catch {
-    return null;
-  }
+  const { data } = await supabase
+    .from('share_tokens')
+    .select('deck_id')
+    .eq('token', token)
+    .single();
+
+  return data?.deck_id || null;
 }
 
 // Global settings management
 export async function getGlobalSettings(): Promise<ThemeConfig> {
-  try {
-    const content = await fs.readFile(GLOBAL_SETTINGS_FILE, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    // File doesn't exist, return defaults
-    return defaultThemeConfig;
-  }
+  const { data } = await supabase
+    .from('global_settings')
+    .select('settings')
+    .eq('id', 1)
+    .single();
+
+  return data?.settings || defaultThemeConfig;
 }
 
 export async function saveGlobalSettings(settings: ThemeConfig): Promise<void> {
-  await fs.writeFile(GLOBAL_SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  await supabase
+    .from('global_settings')
+    .upsert({
+      id: 1,
+      settings,
+      updated_at: new Date().toISOString(),
+    });
 }
