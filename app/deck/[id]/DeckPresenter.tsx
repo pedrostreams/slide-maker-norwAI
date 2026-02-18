@@ -99,19 +99,19 @@ export default function DeckPresenter({ deck }: DeckPresenterProps) {
             >
               Review
             </button>
-            <button
+            {/* <button
               onClick={() => router.push(`/deck/${deck.id}/settings`)}
               className="px-4 py-2 text-sm bg-white/10 text-white font-medium rounded-md hover:bg-white/20 transition-all"
             >
               Settings
-            </button>
+            </button> */}
             <div className="w-px h-6 bg-gray-700 mx-1"></div>
-            <button
+            {/* <button
               onClick={handleShare}
               className="px-4 py-2 text-sm bg-white/10 text-white font-medium rounded-md hover:bg-white/20 transition-all"
             >
               Share
-            </button>
+            </button> */}
             <button
               onClick={handleExport}
               className="px-4 py-2 text-sm bg-white/10 text-white font-medium rounded-md hover:bg-white/20 transition-all"

@@ -135,7 +135,7 @@ export default function EditPresenter({ deck }: EditPresenterProps) {
                   </div>
                 )}
               </div>
-              <div className="bg-gray-900 p-8 rounded-lg">
+              <div className="bg-gray-900 p-4 rounded-lg">
                 <SlideRenderer
                   html={currentHtml}
                   config={deck.config}
