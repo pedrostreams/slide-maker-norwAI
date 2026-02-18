@@ -10,7 +10,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "SlideMaker - AI-Powered Presentations",
+  title: "Azulejo SlideMaker - AI-Powered Presentations",
   description: "Create professional slide decks with AI-powered generation",
 };
 

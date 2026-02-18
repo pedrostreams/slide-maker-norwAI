@@ -54,7 +54,8 @@ export default function SlideRenderer({
     <div
       className={`slide-container relative w-full bg-white shadow-2xl ${className}`}
       style={{
-        aspectRatio: '16 / 9',
+        // aspectRatio: '16 / 9',
+        minHeight: '70vh',
         maxWidth: '1400px',
         margin: '0 auto',
       }}

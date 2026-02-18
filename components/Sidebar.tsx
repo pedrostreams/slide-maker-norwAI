@@ -48,9 +48,12 @@ export default function Sidebar() {
       {/* Logo/Brand */}
       <div className="p-8 border-b border-gray-200">
         <Link href="/" className="block">
-          <h1 className="text-2xl font-light text-gray-900 tracking-tight">
-            Slide<span className="font-semibold">Maker</span>
-          </h1>
+          <div className="flex items-center gap-2">
+            <img src="/favicon_round.svg" alt="" className="w-8 h-8 flex-shrink-0"/>
+            <h1 className="text-2xl font-light text-gray-900 tracking-tight">
+              Azulejo<span className="font-semibold">Maker</span>
+            </h1>
+          </div>
           <p className="text-xs text-gray-500 mt-1 font-light tracking-wide">AI-Powered Presentations</p>
         </Link>
       </div>
