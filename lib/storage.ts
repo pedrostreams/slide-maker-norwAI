@@ -92,10 +92,12 @@ export async function getDeck(deckId: string): Promise<Deck | null> {
   const config = configData.data?.config || defaultThemeConfig;
 
   return {
-    ...metadata,
+    id: metadata.id,
+    title: metadata.title,
     slides,
     config,
     comments,
+    metadata,
   };
 }
 
