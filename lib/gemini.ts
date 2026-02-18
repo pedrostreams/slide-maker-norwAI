@@ -144,42 +144,51 @@ Return ONLY the modified HTML as a single <section> element, with no explanation
  * Handles both JSON array and markdown-wrapped responses
  */
 function parseSlideResponse(response: string): string[] {
+  console.log(`Response length: ${response.length} characters`);
+
   try {
-    // Remove markdown code blocks if present
+    // Step 1: Remove markdown code blocks if present
     let cleaned = response.trim();
     if (cleaned.startsWith('```json')) {
-      cleaned = cleaned.replace(/```json\n?/g, '').replace(/```\n?$/g, '');
+      cleaned = cleaned.replace(/^```json\n?/g, '').replace(/\n?```$/g, '');
     } else if (cleaned.startsWith('```')) {
-      cleaned = cleaned.replace(/```\n?/g, '').replace(/```\n?$/g, '');
+      cleaned = cleaned.replace(/^```\n?/g, '').replace(/\n?```$/g, '');
     }
 
-    // Parse JSON
-    const slides = JSON.parse(cleaned);
+    cleaned = cleaned.trim();
 
-    if (!Array.isArray(slides)) {
-      throw new Error('Response is not an array');
-    }
+    // Step 2: Try to parse as JSON first
+    try {
+      const slides = JSON.parse(cleaned);
 
-    // Validate each slide
-    return slides.map((slide, index) => {
-      if (typeof slide !== 'string') {
-        throw new Error(`Slide ${index} is not a string`);
+      if (Array.isArray(slides)) {
+        // Validate each slide
+        const validSlides = slides.filter(slide => typeof slide === 'string' && slide.includes('<section'));
+        if (validSlides.length > 0) {
+          console.log(`Successfully parsed ${validSlides.length} slides from JSON`);
+          return validSlides;
+        }
       }
-      return slide;
-    });
-  } catch (error) {
-    console.error('Failed to parse slide response:', error);
-    console.error('Response:', response);
+    } catch (jsonError) {
+      console.log('JSON parsing failed, trying regex extraction');
+    }
 
-    // Fallback: try to extract section elements manually
-    const sectionRegex = /<section[^>]*class="slide"[^>]*>[\s\S]*?<\/section>/gi;
+    // Step 3: Fallback to regex extraction on raw response
+    const sectionRegex = /<section[^>]*class=["']slide["'][^>]*>[\s\S]*?<\/section>/gi;
     const matches = response.match(sectionRegex);
 
     if (matches && matches.length > 0) {
+      console.log(`Extracted ${matches.length} slides using regex`);
       return matches;
     }
 
-    throw new Error('Failed to parse slides from response');
+    throw new Error('No valid slides found in response');
+  } catch (error) {
+    console.error('Failed to parse slide response:', error);
+    console.error('Response preview:', response.substring(0, 500));
+    console.error('Response end:', response.substring(response.length - 200));
+
+    throw new Error('Failed to parse slides from response. The AI may have generated invalid output.');
   }
 }
 
