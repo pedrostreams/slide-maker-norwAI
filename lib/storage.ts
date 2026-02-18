@@ -301,7 +301,7 @@ export async function duplicateDeck(deckId: string): Promise<string> {
     .from('decks')
     .insert({
       title: `${sourceDeck.title} (Copy)`,
-      slide_count: sourceDeck.slideCount,
+      slide_count: sourceDeck.metadata.slideCount,
     })
     .select()
     .single();
