@@ -15,6 +15,8 @@ export default function ReviewPresenter({ deck: initialDeck }: ReviewPresenterPr
   const router = useRouter();
   const [currentSlide, setCurrentSlide] = useState(0);
   const [comments, setComments] = useState<Comment[]>(initialDeck.comments);
+  const [slides, setSlides] = useState(initialDeck.slides);
+  const [fixingCommentId, setFixingCommentId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'unresolved' | 'resolved'>('all');
 
   const handlePrevious = () => {
@@ -24,13 +26,13 @@ export default function ReviewPresenter({ deck: initialDeck }: ReviewPresenterPr
   };
 
   const handleNext = () => {
-    if (currentSlide < initialDeck.slides.length - 1) {
+    if (currentSlide < slides.length - 1) {
       setCurrentSlide(currentSlide + 1);
     }
   };
 
   const handleSlideChange = (index: number) => {
-    setCurrentSlide(Math.max(0, Math.min(index, initialDeck.slides.length - 1)));
+    setCurrentSlide(Math.max(0, Math.min(index, slides.length - 1)));
   };
 
   const handleAddComment = async (comment: Omit<Comment, 'id' | 'createdAt' | 'author'>) => {
@@ -113,6 +115,48 @@ export default function ReviewPresenter({ deck: initialDeck }: ReviewPresenterPr
     }, comment.slideIndex !== currentSlide ? 300 : 0);
   };
 
+  const handleFixComment = async (comment: Comment) => {
+    setFixingCommentId(comment.id);
+
+    try {
+      const currentHtml = slides[comment.slideIndex].html;
+      const fixPrompt = `Fix this comment on the slide: "${comment.text}"${comment.selector ? `. The comment was made on the element matching: "${comment.selector}"` : ''}.`;
+
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: fixPrompt,
+          deckId: initialDeck.id,
+          mode: 'modify',
+          currentHtml,
+          slideIndex: comment.slideIndex,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.slides?.[0]) {
+          // Update the slide in local state
+          setSlides(prev =>
+            prev.map((s, i) => i === comment.slideIndex ? { ...s, html: data.slides[0] } : s)
+          );
+          // Auto-resolve the comment
+          await handleToggleResolved(comment.id);
+          // Navigate to the fixed slide
+          setCurrentSlide(comment.slideIndex);
+        }
+      } else {
+        alert('Failed to fix comment. Please try again.');
+      }
+    } catch (error) {
+      console.error('Fix comment error:', error);
+      alert('Failed to fix comment. Please try again.');
+    } finally {
+      setFixingCommentId(null);
+    }
+  };
+
   const currentSlideComments = comments.filter((c) => c.slideIndex === currentSlide);
   const filteredComments =
     filter === 'all'
@@ -160,7 +204,7 @@ export default function ReviewPresenter({ deck: initialDeck }: ReviewPresenterPr
         <div className="flex-1 flex items-center justify-center p-8 relative">
           <div className="w-full max-w-6xl relative">
             <SlideRenderer
-              html={initialDeck.slides[currentSlide].html}
+              html={slides[currentSlide].html}
               config={initialDeck.config}
               slideIndex={currentSlide}
             />
@@ -176,7 +220,7 @@ export default function ReviewPresenter({ deck: initialDeck }: ReviewPresenterPr
         <div className="p-8 flex justify-center">
           <SlideNavigation
             currentSlide={currentSlide}
-            totalSlides={initialDeck.slides.length}
+            totalSlides={slides.length}
             onPrevious={handlePrevious}
             onNext={handleNext}
             onSlideChange={handleSlideChange}
@@ -275,19 +319,41 @@ export default function ReviewPresenter({ deck: initialDeck }: ReviewPresenterPr
                       })}
                     </div>
                   </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleToggleResolved(comment.id);
-                    }}
-                    className={`px-2 py-1 text-xs font-medium rounded transition-all ${
-                      comment.resolved
-                        ? 'bg-green-600 text-white hover:bg-green-700'
-                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                    }`}
-                  >
-                    {comment.resolved ? 'Resolved' : 'Resolve'}
-                  </button>
+                  <div className="flex gap-1.5">
+                    {!comment.resolved && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleFixComment(comment);
+                        }}
+                        disabled={fixingCommentId === comment.id}
+                        className="px-2 py-1 text-xs font-medium rounded transition-all bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                      >
+                        {fixingCommentId === comment.id ? (
+                          <>
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                            Fixing...
+                          </>
+                        ) : 'Fix'}
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleResolved(comment.id);
+                      }}
+                      className={`px-2 py-1 text-xs font-medium rounded transition-all ${
+                        comment.resolved
+                          ? 'bg-green-600 text-white hover:bg-green-700'
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      {comment.resolved ? 'Resolved' : 'Resolve'}
+                    </button>
+                  </div>
                 </div>
                 <p className="text-sm text-gray-900 font-light">{comment.text}</p>
                 <p className="text-xs text-gray-400 mt-2 font-light">
