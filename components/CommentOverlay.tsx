@@ -114,8 +114,10 @@ export default function CommentOverlay({
   // Generate a simple CSS selector for the element
   const generateSelector = (element: HTMLElement): string => {
     if (element.id) return `#${element.id}`;
-    if (element.className) {
-      const classes = element.className.split(' ').filter(Boolean);
+    // Use getAttribute to handle SVG elements where className is SVGAnimatedString
+    const classAttr = element.getAttribute('class');
+    if (classAttr) {
+      const classes = classAttr.split(' ').filter(Boolean);
       if (classes.length > 0) return `.${classes.join('.')}`;
     }
     return element.tagName.toLowerCase();
