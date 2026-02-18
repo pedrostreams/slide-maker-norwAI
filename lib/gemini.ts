@@ -66,8 +66,11 @@ export async function modifySlide(
     const result = await model.generateContent(systemPrompt);
     const response = result.response.text();
 
-    // Clean up the response (remove markdown code blocks if present)
-    return cleanHtmlResponse(response);
+    // Structured output returns { slides: [...] } - extract first slide
+    const parsed = JSON.parse(response);
+    if (parsed.slides?.[0]) return parsed.slides[0];
+
+    throw new Error('No slide returned from modify');
   } catch (error) {
     console.error('Error modifying slide:', error);
     throw new Error('Failed to modify slide');
@@ -85,6 +88,10 @@ function buildSlideGenerationPrompt(
   const { theme, logo } = config;
 
   return `You are an expert slide designer for management consulting presentations. Generate professional HTML slides based on the user's request.
+
+  RULES:
+  - Never use emojis. ALWAYS use svgs. 
+  - Keep a clean, professional scandinavian design aesthetic with lots of whitespace.
 
 THEME CONFIGURATION:
 - Primary Color: ${theme.primaryColor}
@@ -201,21 +208,6 @@ function parseSlideResponse(response: string): string[] {
   }
 }
 
-/**
- * Clean HTML response by removing markdown code blocks
- */
-function cleanHtmlResponse(response: string): string {
-  let cleaned = response.trim();
-
-  // Remove markdown code blocks
-  if (cleaned.startsWith('```html')) {
-    cleaned = cleaned.replace(/```html\n?/g, '').replace(/```\n?$/g, '');
-  } else if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/```\n?/g, '').replace(/```\n?$/g, '');
-  }
-
-  return cleaned.trim();
-}
 
 /**
  * Validate that the Gemini API key is configured
